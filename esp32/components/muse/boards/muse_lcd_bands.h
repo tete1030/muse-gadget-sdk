@@ -56,3 +56,6 @@ lv_display_t *muse_lcd_bands_register(esp_lv_adapter_display_config_t cfg, int l
  * this, whichever core it's called from.
  */
 void muse_lcd_bands_run(void (*fn)(void *arg), void *arg);
+/* Call only while holding LVGL's lock. Drains queued/in-flight DMA first.
+ * Software rotation preserves the panel's MADCTL and existing address gap. */
+bool muse_lcd_bands_set_rotation(unsigned quarter_turns);

@@ -20,6 +20,7 @@ as their plain ones (muse_text.c)."""
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -114,6 +115,46 @@ class CaptionWrapTest(unittest.TestCase):
 
     def test_mixed_text_breaks_at_spaces_or_between_cjk(self) -> None:
         self.assertEqual(self.wrap("Muse 说 hello world", 8), ["Muse 说", "hello", "world"])
+
+    def page(self, text: str, cols: int, lines: int, at: int) -> str:
+        proc = subprocess.run(
+            [str(self.binary), "page", str(cols), str(lines), str(at)],
+            input=text.encode(), capture_output=True, check=True,
+        )
+        # Strict decoding also catches an offset splitting a UTF-8 character.
+        return proc.stdout.decode()
+
+    def test_reading_pages_at_every_utf8_byte_offset(self) -> None:
+        for text in (
+            "中文回复需要慢慢阅读，最后一页保留六秒。",
+            "Muse 说 hello world，今天30°，请带伞。",
+            "ASCII words remain whole while reading the reply.",
+        ):
+            for lines in (1, 2, 3, 5):
+                pages = [self.page(text, 8, lines, at) for at in range(len(text.encode()))]
+                self.assertTrue(all(pages))
+                for page in pages:
+                    self.assertLessEqual(len(page.splitlines()), lines)
+                    for line in page.splitlines():
+                        self.assertNotIn(line[:1], CLOSING)
+                # No non-space character is lost, including the last character.
+                shown = "".join(pages)
+                for character in text.replace(" ", ""):
+                    self.assertIn(character, shown)
+                self.assertIn(text[-1], pages[-1])
+
+    def test_silent_reading_defaults_and_frame_timing(self) -> None:
+        source = (ROOT / "components/muse/muse_chat_session.cpp").read_text()
+        constant = lambda name: int(re.search(r"^#define " + name + r" (\d+)", source, re.M)[1])
+        rate, hold, sample_rate = map(constant, ("TEXT_CHARS_PER_S", "TEXT_HOLD_S", "MIC_RATE"))
+        self.assertEqual((rate, hold), (6, 6))
+        # Production keeps byte offsets; Chinese must take three times ASCII time.
+        for text, seconds in (("abcdef", 1), ("中文回复", 2), ("Hi中文", 8 / 6)):
+            frames = len(text.encode()) * sample_rate // rate
+            self.assertAlmostEqual(frames / sample_rate, seconds, places=4)
+            self.assertEqual(hold * sample_rate, 96000)
+        self.assertIn("m.len * MIC_RATE / TEXT_CHARS_PER_S", source)
+        self.assertIn("m.pcm_frames + TEXT_HOLD_S * MIC_RATE", source)
 
     def shown(self, text: str) -> str:
         proc = subprocess.run(

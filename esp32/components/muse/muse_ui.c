@@ -15,6 +15,7 @@
  */
 
 #include "muse_ui.h"
+#include "muse_rotation.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -1552,8 +1553,34 @@ void muse_ui_request_snapshot(void)
     s_snapshot = true;
 }
 
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175
+/* These icons label physical buttons, whose panel positions do not rotate.
+ * Inverse-rotate their centre offsets while the rest of the UI turns normally. */
+static void update_orientation_hints(void)
+{
+    static int previous = -1;
+    int rotation = muse_rotation_current();
+    if (previous == rotation) return;
+    previous = rotation;
+    lv_obj_t *icons[] = { s_mic_icon, s_aux_icon };
+    const muse_button_hint_t *hints[] = { &muse_board->talk_hint, &muse_board->aux_hint };
+    for (int i = 0; i < 2; i++) {
+        if (!icons[i] || hints[i]->align != LV_ALIGN_CENTER) continue;
+        int x = hints[i]->x, y = hints[i]->y, rx = x, ry = y;
+        if (rotation == 1) { rx = y; ry = -x; }
+        if (rotation == 2) { rx = -x; ry = -y; }
+        if (rotation == 3) { rx = -y; ry = x; }
+        lv_obj_align(icons[i], LV_ALIGN_CENTER, rx, ry);
+    }
+}
+#endif
+
 static void frame_tick(lv_timer_t *timer)
 {
+    muse_rotation_tick();
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175
+    update_orientation_hints();
+#endif
 #if LV_USE_SNAPSHOT
     if (s_bench_page >= 0) {
         bool settings = s_bench_page != 0;

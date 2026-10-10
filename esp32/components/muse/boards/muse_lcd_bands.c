@@ -28,10 +28,12 @@
 #include "freertos/task.h"
 
 #include "muse_mem.h"
+#include "muse_rotation_pixels.h"
 
 typedef struct {
     const uint8_t *data;   /* NULL: run s_call instead */
     int x1, y1, x2, y2;
+    unsigned rotation;
 } band_t;
 
 static const char *TAG = "lcd_bands";
@@ -46,6 +48,8 @@ static void *s_call_arg;
 static SemaphoreHandle_t s_chunk_free;   /* internal buffers not on the wire */
 static uint8_t *s_chunk[2];
 static size_t s_chunk_bytes;
+static int s_width, s_height;
+static unsigned s_rotation;
 static int s_chunks_out;                 /* of the band being sent */
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -75,7 +79,7 @@ static esp_err_t queue_band(lv_display_t *disp, esp_lcd_panel_handle_t panel, in
     (void)disp;
     (void)panel;
     (void)ctx;
-    band_t b = { data, x1, y1, x2, y2 };
+    band_t b = { data, x1, y1, x2, y2, s_rotation };
     return xQueueSend(s_bands, &b, 0) == pdTRUE ? ESP_OK : ESP_FAIL;
 }
 
@@ -92,25 +96,50 @@ static void send_bands(void *arg)
     for (;;) {
         xQueueReceive(s_bands, &b, portMAX_DELAY);
         if (!b.data) {
+            /* A queued band may have its final DMA still in flight. Do not
+             * change coordinates or panel state until both buffers are free. */
+            xSemaphoreTake(s_chunk_free, portMAX_DELAY);
+            xSemaphoreTake(s_chunk_free, portMAX_DELAY);
             s_call(s_call_arg);
+            xSemaphoreGive(s_chunk_free);
+            xSemaphoreGive(s_chunk_free);
             xSemaphoreGive(s_call_done);
             continue;
         }
-        size_t row = (size_t)(b.x2 - b.x1) * 2;
+        int x1 = b.x1, y1 = b.y1, x2 = b.x2, y2 = b.y2;
+        if (b.rotation && !muse_rotation_rect(s_width, b.rotation, b.x1, b.y1, b.x2, b.y2,
+                                              &x1, &y1, &x2, &y2)) {
+            lv_display_flush_ready(s_disp);
+            continue;
+        }
+        size_t row = (size_t)(x2 - x1) * 2;
         int rows = s_chunk_bytes / row & ~1;
         /* LVGL sends no more until this band is done, so nothing is still
          * counting down. */
-        s_chunks_out = (b.y2 - b.y1 + rows - 1) / rows;
-        for (int y = b.y1; y < b.y2; y += rows) {
-            int h = b.y2 - y < rows ? b.y2 - y : rows;
+        s_chunks_out = (y2 - y1 + rows - 1) / rows;
+        for (int y = y1; y < y2; y += rows) {
+            int h = y2 - y < rows ? y2 - y : rows;
             xSemaphoreTake(s_chunk_free, portMAX_DELAY);
-            memcpy(s_chunk[k], b.data + (size_t)(y - b.y1) * row, h * row);
-            esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, b.x1, y, b.x2, y + h, s_chunk[k]);
+            bool copied = true;
+            if (!b.rotation) {
+                memcpy(s_chunk[k], b.data + (size_t)(y - b.y1) * row, h * row);
+            } else {
+                copied = muse_rotation_copy_rows(b.data, b.x1, b.y1, b.x2, b.y2,
+                                                 s_width, b.rotation, y, h, s_chunk[k]);
+            }
+            esp_err_t err = copied ? esp_lcd_panel_draw_bitmap(s_panel, x1, y, x2, y + h, s_chunk[k]) : ESP_FAIL;
             if (err != ESP_OK) {
                 xSemaphoreGive(s_chunk_free);
                 if (chunk_done()) {
                     lv_display_flush_ready(s_disp);
                 }
+                /* A failed submission breaks the otherwise FIFO k0/k1
+                 * alternation: the next index might still be in flight.
+                 * Drain both tokens before reusing either buffer. */
+                xSemaphoreTake(s_chunk_free, portMAX_DELAY);
+                xSemaphoreTake(s_chunk_free, portMAX_DELAY);
+                xSemaphoreGive(s_chunk_free);
+                xSemaphoreGive(s_chunk_free);
             }
             k ^= 1;
         }
@@ -120,6 +149,8 @@ static void send_bands(void *arg)
 lv_display_t *muse_lcd_bands_register(esp_lv_adapter_display_config_t cfg, int lines, size_t chunk_bytes)
 {
     s_panel = cfg.panel;
+    s_width = cfg.profile.hor_res;
+    s_height = cfg.profile.ver_res;
     s_chunk_bytes = chunk_bytes;
     if (xTaskGetCoreID(xTaskGetCurrentTaskHandle()) != MUSE_UI_CORE) {
         ESP_LOGE(TAG, "not pinned to core %d: the panel's SPI interrupt can strand the send task", MUSE_UI_CORE);
@@ -164,4 +195,16 @@ void muse_lcd_bands_run(void (*fn)(void *arg), void *arg)
     xQueueSend(s_bands, &call, portMAX_DELAY);
     xSemaphoreTake(s_call_done, portMAX_DELAY);
     xSemaphoreGive(s_call_lock);
+}
+
+static void set_rotation(void *arg)
+{
+    s_rotation = *(unsigned *)arg;
+}
+
+bool muse_lcd_bands_set_rotation(unsigned quarter_turns)
+{
+    if (quarter_turns > 3 || s_width != s_height || !s_bands) return false;
+    muse_lcd_bands_run(set_rotation, &quarter_turns);
+    return true;
 }

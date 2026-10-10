@@ -39,6 +39,8 @@ static struct {
     uint16_t sleep_s;
     bool wifi_on;
     bool ble_on;
+    uint8_t rotation;
+    bool rotation_auto;
     char ssid[MUSE_SSID_MAX + 1];
     char pass[MUSE_PASS_MAX + 1];
     char host[MUSE_HOST_MAX + 1];
@@ -120,6 +122,9 @@ esp_err_t muse_settings_init(void)
     }
     load_u8("mic_gain", &s.mic_gain);
     load_u8("bright", &s.brightness);
+    load_u8("rotation", &s.rotation);
+    if (s.rotation > 3) s.rotation = 0;
+    if (nvs_get_u8(s_nvs, "rot_auto", &b) == ESP_OK) s.rotation_auto = b == 1;
     nvs_get_u16(s_nvs, "sleep_s", &s.sleep_s);
     if (nvs_get_u8(s_nvs, "wifi_on", &b) == ESP_OK) {
         s.wifi_on = b;
@@ -154,6 +159,25 @@ int muse_settings_brightness(void) { return s.brightness; }
 int muse_settings_sleep_s(void) { return s.sleep_s; }
 bool muse_settings_wifi_on(void) { return s.wifi_on; }
 bool muse_settings_ble_on(void) { return s.ble_on; }
+int muse_settings_rotation(void) { return s.rotation; }
+bool muse_settings_rotation_auto(void) { return s.rotation_auto; }
+
+void muse_settings_set_rotation(int quarter_turns)
+{
+    if (quarter_turns < 0 || quarter_turns > 3) return;
+    s.rotation = quarter_turns;
+    s.rotation_auto = false;
+    save_u8("rotation", s.rotation);
+    save_u8("rot_auto", 0);
+    notify(MUSE_SETTING_ROTATION);
+}
+
+void muse_settings_set_rotation_auto(bool on)
+{
+    s.rotation_auto = on;
+    save_u8("rot_auto", on);
+    notify(MUSE_SETTING_ROTATION);
+}
 
 /* Home Link owns the saved networks (this is the first); the local copy is only a fallback. */
 void muse_settings_wifi(char ssid[MUSE_SSID_MAX + 1], char pass[MUSE_PASS_MAX + 1])

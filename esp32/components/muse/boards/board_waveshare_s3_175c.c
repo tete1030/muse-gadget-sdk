@@ -40,6 +40,7 @@
 #include "muse_lcd_bands.h"
 #include "muse_mem.h"
 #include "muse_pmu.h"
+#include "muse_rotation.h"
 
 static const char *TAG = "board";
 
@@ -144,6 +145,9 @@ static lv_display_t *display_start(lv_indev_t **touch)
     }
     const esp_lv_adapter_touch_config_t tp_cfg = ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(disp, s_tp);
     *touch = esp_lv_adapter_register_touch(&tp_cfg);
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175
+    if (*touch) muse_rotation_attach(disp, s_tp, *touch);
+#endif
     if (!*touch || esp_lv_adapter_start() != ESP_OK) {
         return NULL;
     }

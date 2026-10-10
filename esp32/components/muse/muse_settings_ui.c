@@ -33,6 +33,7 @@
 #include "muse_keypad.h"
 #include "muse_link.h"
 #include "muse_settings.h"
+#include "muse_rotation.h"
 #include "muse_state.h"
 #include "muse_text.h"
 #include "muse_ui.h"
@@ -102,6 +103,10 @@ static const int SLEEP_CHOICES[] = { 0, 30, 60, 120, 300, 600 };
 static const char *const SLEEP_NAMES[] = { "Never", "30 seconds", "1 minute", "2 minutes", "5 minutes", "10 minutes" };
 #define SLEEP_COUNT (int)(sizeof(SLEEP_CHOICES) / sizeof(SLEEP_CHOICES[0]))
 static lv_obj_t *s_sleep_checks[SLEEP_COUNT];
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175
+static lv_obj_t *s_rotation_page, *s_rotation_auto, *s_rotation_status, *s_home_rotation;
+static lv_obj_t *s_rotation_checks[4];
+#endif
 
 /* Battery page. */
 static lv_obj_t *s_batt_status, *s_batt_level, *s_batt_drain, *s_batt_full, *s_batt_off, *s_batt_slept, *s_batt_wakes,
@@ -359,7 +364,11 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 
 static void drop(lv_obj_t *p)
 {
-    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text };
+    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text,
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175
+        &s_rotation_page,
+#endif
+    };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
             *pages[i] = NULL;
@@ -1106,6 +1115,46 @@ static void tick_sleep(void)
     }
 }
 
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175
+/* ---------- Screen orientation ---------- */
+static void on_rotation_choice(lv_event_t *e)
+{
+    muse_settings_set_rotation((int)(intptr_t)lv_event_get_user_data(e));
+}
+
+static void on_rotation_auto(lv_event_t *e)
+{
+    muse_settings_set_rotation_auto(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+}
+
+static void build_rotation_page(lv_obj_t *tile)
+{
+    lv_obj_t *list;
+    s_rotation_page = page(tile, "SCREEN", true, &list);
+    s_rotation_auto = switch_row(list, "Auto rotate", muse_settings_rotation_auto(), on_rotation_auto);
+    static const char *const names[] = { "0 degrees", "90 degrees", "180 degrees", "270 degrees" };
+    for (int i = 0; i < 4; i++) {
+        row(list, NULL, names[i], &s_rotation_checks[i], on_rotation_choice, (void *)(intptr_t)i);
+    }
+    s_rotation_status = note(list, "");
+    note(list, "Choose an angle for manual mode. Auto keeps the last direction when flat or moving. "
+               "A sensor failure uses your saved manual angle. Changes wait until you lift your finger.");
+}
+
+static void tick_rotation(void)
+{
+    bool automatic = muse_settings_rotation_auto();
+    lv_obj_set_state(s_rotation_auto, LV_STATE_CHECKED, automatic);
+    for (int i = 0; i < 4; i++) {
+        set_text(s_rotation_checks[i], !automatic && muse_settings_rotation() == i ? LV_SYMBOL_OK : "");
+    }
+    char text[96];
+    snprintf(text, sizeof(text), "%s: %d degrees%s", automatic ? "Auto" : "Manual",
+             90 * muse_rotation_current(), automatic && !muse_rotation_auto_ready() ? " (sensor not ready)" : "");
+    set_text(s_rotation_status, text);
+}
+#endif
+
 /* ---------- Battery ---------- */
 
 static void on_battery_reset(lv_event_t *e)
@@ -1245,6 +1294,9 @@ static const page_t SOUND = { &s_sound, build_sound_page };
 static const page_t SLEEP = { &s_sleep, build_sleep_page };
 static const page_t BATTERY = { &s_battery, build_battery_page };
 static const page_t POWER = { &s_power, build_power_page };
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175
+static const page_t ROTATION = { &s_rotation_page, build_rotation_page };
+#endif
 
 static void build_home(lv_obj_t *tile)
 {
@@ -1255,6 +1307,9 @@ static void build_home(lv_obj_t *tile)
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_home_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
     row(list, LV_SYMBOL_EYE_CLOSE, "Sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175
+    row(list, LV_SYMBOL_REFRESH, "Screen", &s_home_rotation, on_nav, (void *)&ROTATION);
+#endif
     row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_home_battery, on_nav, (void *)&BATTERY);
     row(list, LV_SYMBOL_POWER, "Power off", NULL, on_nav, (void *)&POWER);
     s_about = note(list, "");
@@ -1262,6 +1317,12 @@ static void build_home(lv_obj_t *tile)
 
 static void tick_home(void)
 {
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175
+    char rotation[32];
+    snprintf(rotation, sizeof(rotation), "%s%d degrees", muse_settings_rotation_auto() ? "Auto " : "",
+             muse_rotation_current() * 90);
+    set_text(s_home_rotation, rotation);
+#endif
     muse_wifi_status_t w;
     muse_wifi_status(&w);
     static const char *const WIFI_VALUES[] = { "Off", "Not set", "Joining", "", "Failed", "Not nearby" };
@@ -1333,6 +1394,10 @@ void muse_settings_ui_tick(bool visible)
         tick_sleep();
     } else if (s_current == s_battery) {
         tick_battery();
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175
+    } else if (s_current == s_rotation_page) {
+        tick_rotation();
+#endif
     }
 }
 

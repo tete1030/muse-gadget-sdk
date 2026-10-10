@@ -100,8 +100,8 @@ static const char *TAG = "muse_chat_session";
 #define EV_TEXT 72
 #define TEXT_MAX 1024                      /* a message's text, for captions timed to its speech */
 #define SPEECH_CHARS_PER_S 14              /* until the speech's length is known */
-#define TEXT_CHARS_PER_S 16                /* speaker off: reading pace, a little over speech */
-#define TEXT_HOLD_S 2                      /* speaker off: how long a message's last lines stay up */
+#define TEXT_CHARS_PER_S 6                 /* UTF-8 bytes/s: ~6 ASCII or ~2 CJK characters/s */
+#define TEXT_HOLD_S 6                      /* silent reading: keep the final page up for six seconds */
 
 #define PING_US (20 * 1000000LL)
 #define DEAD_US (60 * 1000000LL)           /* nothing from the server, pongs included */

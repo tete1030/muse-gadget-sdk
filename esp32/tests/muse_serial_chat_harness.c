@@ -96,6 +96,13 @@ int main(int argc, char **argv)
         if (muse_hatch_caption_at(in, 0, page, sizeof(page))) {
             fputs(page, stdout);
         }
+    } else if (argc > 4 && !strcmp(argv[1], "page")) {
+        s_cols = atoi(argv[2]);
+        s_lines = atoi(argv[3]);
+        static char page[1 << 16];
+        if (muse_hatch_caption_at(in, strtoul(argv[4], NULL, 10), page, sizeof(page))) {
+            fputs(page, stdout);
+        }
     } else if (argc > 1 && !strcmp(argv[1], "ascii")) {
         static char shown[1 << 16];
         strlcpy(shown, in, sizeof(shown));
